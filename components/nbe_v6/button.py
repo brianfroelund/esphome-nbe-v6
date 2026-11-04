@@ -1,10 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import button
-from esphome.const import (
-    DEVICE_CLASS_RESTART,
-    ENTITY_CATEGORY_CONFIG,
-)
+from esphome.const import ENTITY_CATEGORY_CONFIG
 from . import NBEV6Component, CONF_NBE_V6_ID, nbe_v6_ns
 
 DEPENDENCIES = ["nbe_v6"]
@@ -35,10 +32,7 @@ CONFIG_SCHEMA = cv.Schema(
 async def to_code(config):
     hub = await cg.get_variable(config[CONF_NBE_V6_ID])
 
-    if CONF_RESET_ALARM in config:
-        b = await button.new_button(config[CONF_RESET_ALARM])
-        await cg.register_parented(b, hub)
-
-    if CONF_RESET_IGNITION in config:
-        b = await button.new_button(config[CONF_RESET_IGNITION])
-        await cg.register_parented(b, hub)
+    for key in (CONF_RESET_ALARM, CONF_RESET_IGNITION):
+        if key in config:
+            b = await button.new_button(config[key])
+            await cg.register_parented(b, hub)

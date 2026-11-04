@@ -28,10 +28,11 @@ CONFIG_SCHEMA = cv.Schema(
 async def to_code(config):
     hub = await cg.get_variable(config[CONF_NBE_V6_ID])
 
-    if CONF_ALARM_ACTIVE in config:
-        sens = await binary_sensor.new_binary_sensor(config[CONF_ALARM_ACTIVE])
-        cg.add(hub.set_alarm_active_sensor(sens))
-
-    if CONF_FIRE_DETECTED in config:
-        sens = await binary_sensor.new_binary_sensor(config[CONF_FIRE_DETECTED])
-        cg.add(hub.set_fire_detected_sensor(sens))
+    binary_sensors_map = [
+        (CONF_ALARM_ACTIVE, hub.set_alarm_active_sensor),
+        (CONF_FIRE_DETECTED, hub.set_fire_detected_sensor),
+    ]
+    for key, setter in binary_sensors_map:
+        if key in config:
+            sens = await binary_sensor.new_binary_sensor(config[key])
+            cg.add(setter(sens))

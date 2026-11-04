@@ -2,9 +2,11 @@
 
 #include "esphome/core/component.h"
 #include "esphome/components/uart/uart.h"
+#include "esphome/components/switch/switch.h"
+#include "esphome/components/number/number.h"
+#include "esphome/components/button/button.h"
 
 #include <string>
-#include <vector>
 #include <queue>
 
 namespace esphome {
@@ -18,17 +20,10 @@ class BinarySensor;
 namespace text_sensor {
 class TextSensor;
 }
-namespace switch_ {
-class Switch;
-}
-namespace number {
-class Number;
-}
-namespace button {
-class Button;
-}
 
 namespace nbe_v6 {
+
+class NBEV6Component;
 
 enum State {
   STATE_IDLE,
@@ -49,8 +44,11 @@ enum PollFrameType {
 struct QueuedCommand {
   std::string command;
   std::string description;
+  PollFrameType frame_type{FRAME_COMMAND};
+  size_t expected_length{3};
 };
 
+// Component Hub
 class NBEV6Component : public PollingComponent, public uart::UARTDevice {
  public:
   NBEV6Component() = default;
@@ -60,7 +58,7 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   void update() override;
   void dump_config() override;
 
-  // Sensor setters
+  // Sensor Setters
   void set_boiler_temperature_sensor(sensor::Sensor *s) { boiler_temp_sensor_ = s; }
   void set_chute_temperature_sensor(sensor::Sensor *s) { chute_temp_sensor_ = s; }
   void set_smoke_temperature_sensor(sensor::Sensor *s) { smoke_temp_sensor_ = s; }
@@ -78,12 +76,12 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   void set_ignition_runtime_hours_sensor(sensor::Sensor *s) { ignition_runtime_hours_sensor_ = s; }
   void set_target_boiler_temp_sensor(sensor::Sensor *s) { target_boiler_temp_sensor_ = s; }
 
-  // Text sensors
+  // Text Sensors
   void set_mode_text_sensor(text_sensor::TextSensor *s) { mode_text_sensor_ = s; }
   void set_alarm_text_sensor(text_sensor::TextSensor *s) { alarm_text_sensor_ = s; }
   void set_version_text_sensor(text_sensor::TextSensor *s) { version_text_sensor_ = s; }
 
-  // Binary sensors
+  // Binary Sensors
   void set_alarm_active_sensor(binary_sensor::BinarySensor *s) { alarm_active_sensor_ = s; }
   void set_fire_detected_sensor(binary_sensor::BinarySensor *s) { fire_detected_sensor_ = s; }
 
@@ -91,7 +89,7 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   void set_burner_switch(switch_::Switch *s) { burner_switch_ = s; }
   void set_autocalculation_switch(switch_::Switch *s) { autocalculation_switch_ = s; }
 
-  // Numbers (Setpoints & Combustion Parameters)
+  // Numbers
   void set_boiler_temp_set_number(number::Number *n) { boiler_temp_set_number_ = n; }
   void set_feeder_capacity_number(number::Number *n) { feeder_capacity_number_ = n; }
   void set_blower_low_number(number::Number *n) { blower_low_number_ = n; }
@@ -103,7 +101,7 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   void set_min_power_number(number::Number *n) { min_power_number_ = n; }
   void set_max_power_number(number::Number *n) { max_power_number_ = n; }
 
-  // Control actions
+  // Actions & Control
   void turn_burner_on();
   void turn_burner_off();
   void reset_alarm();
@@ -125,10 +123,14 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   static std::string add_checksum(const std::string &data);
 
  protected:
-  void send_raw_frame(const std::string &frame, PollFrameType type, size_t expected_length, const std::string &desc);
+  void queue_poll(const std::string &cmd, PollFrameType type, size_t exp_len, const std::string &desc);
   void queue_command(const std::string &cmd, const std::string &desc);
+  void queue_param_write(const char *address, float val, float min_val, float max_val, int decimals, const char *desc);
+
+  void send_raw_frame(const std::string &frame, PollFrameType type, size_t expected_length, const std::string &desc);
   void process_incoming_byte(uint8_t byte);
   void handle_completed_frame();
+
   void parse_frame_z00(const std::string &frame);
   void parse_frame_z01(const std::string &frame);
   void parse_frame_z02(const std::string &frame);
@@ -140,6 +142,8 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   static std::string trim(const std::string &str);
   static bool parse_int_field(const std::string &frame, size_t offset, size_t len, int &val);
   static bool parse_float_field(const std::string &frame, size_t offset, size_t len, int decimals, float &val);
+  static void parse_and_publish_sensor(sensor::Sensor *s, const std::string &frame, size_t offset, size_t len, int decimals);
+  static void publish_number_if_changed(number::Number *n, float val);
 
   State state_{STATE_IDLE};
   PollFrameType current_frame_type_{FRAME_NONE};
@@ -155,7 +159,7 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   uint32_t poll_cycle_{0};
   bool version_requested_{false};
 
-  // Sensor pointers
+  // Sensors
   sensor::Sensor *boiler_temp_sensor_{nullptr};
   sensor::Sensor *chute_temp_sensor_{nullptr};
   sensor::Sensor *smoke_temp_sensor_{nullptr};
@@ -173,16 +177,16 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   sensor::Sensor *ignition_runtime_hours_sensor_{nullptr};
   sensor::Sensor *target_boiler_temp_sensor_{nullptr};
 
+  // Text & Binary
   text_sensor::TextSensor *mode_text_sensor_{nullptr};
   text_sensor::TextSensor *alarm_text_sensor_{nullptr};
   text_sensor::TextSensor *version_text_sensor_{nullptr};
-
   binary_sensor::BinarySensor *alarm_active_sensor_{nullptr};
   binary_sensor::BinarySensor *fire_detected_sensor_{nullptr};
 
+  // Switches & Numbers
   switch_::Switch *burner_switch_{nullptr};
   switch_::Switch *autocalculation_switch_{nullptr};
-
   number::Number *boiler_temp_set_number_{nullptr};
   number::Number *feeder_capacity_number_{nullptr};
   number::Number *blower_low_number_{nullptr};
@@ -195,9 +199,78 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   number::Number *max_power_number_{nullptr};
 };
 
+// Switch Entities
+class NBEV6BurnerSwitch : public switch_::Switch, public Parented<NBEV6Component> {
+ protected:
+  void write_state(bool state) override;
+};
+
+class NBEV6AutoCalcSwitch : public switch_::Switch, public Parented<NBEV6Component> {
+ protected:
+  void write_state(bool state) override;
+};
+
+// Number Entities
+class NBEV6BoilerTempNumber : public number::Number, public Parented<NBEV6Component> {
+ protected:
+  void control(float value) override;
+};
+
+class NBEV6FeederCapacityNumber : public number::Number, public Parented<NBEV6Component> {
+ protected:
+  void control(float value) override;
+};
+
+class NBEV6BlowerLowNumber : public number::Number, public Parented<NBEV6Component> {
+ protected:
+  void control(float value) override;
+};
+
+class NBEV6BlowerMidNumber : public number::Number, public Parented<NBEV6Component> {
+ protected:
+  void control(float value) override;
+};
+
+class NBEV6BlowerHighNumber : public number::Number, public Parented<NBEV6Component> {
+ protected:
+  void control(float value) override;
+};
+
+class NBEV6FeederLowNumber : public number::Number, public Parented<NBEV6Component> {
+ protected:
+  void control(float value) override;
+};
+
+class NBEV6FeederHighNumber : public number::Number, public Parented<NBEV6Component> {
+ protected:
+  void control(float value) override;
+};
+
+class NBEV6FeedPerMinuteNumber : public number::Number, public Parented<NBEV6Component> {
+ protected:
+  void control(float value) override;
+};
+
+class NBEV6MinPowerNumber : public number::Number, public Parented<NBEV6Component> {
+ protected:
+  void control(float value) override;
+};
+
+class NBEV6MaxPowerNumber : public number::Number, public Parented<NBEV6Component> {
+ protected:
+  void control(float value) override;
+};
+
+// Button Entities
+class NBEV6ResetAlarmButton : public button::Button, public Parented<NBEV6Component> {
+ protected:
+  void press_action() override;
+};
+
+class NBEV6ResetIgnitionButton : public button::Button, public Parented<NBEV6Component> {
+ protected:
+  void press_action() override;
+};
+
 }  // namespace nbe_v6
 }  // namespace esphome
-
-#include "nbe_v6_switch.h"
-#include "nbe_v6_number.h"
-#include "nbe_v6_button.h"

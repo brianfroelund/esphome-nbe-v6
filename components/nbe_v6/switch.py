@@ -1,9 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import switch
-from esphome.const import (
-    DEVICE_CLASS_SWITCH,
-)
+from esphome.const import DEVICE_CLASS_SWITCH
 from . import NBEV6Component, CONF_NBE_V6_ID, nbe_v6_ns
 
 DEPENDENCIES = ["nbe_v6"]
@@ -33,12 +31,12 @@ CONFIG_SCHEMA = cv.Schema(
 async def to_code(config):
     hub = await cg.get_variable(config[CONF_NBE_V6_ID])
 
-    if CONF_BURNER in config:
-        sw = await switch.new_switch(config[CONF_BURNER])
-        await cg.register_parented(sw, hub)
-        cg.add(hub.set_burner_switch(sw))
-
-    if CONF_AUTOCALCULATION in config:
-        sw = await switch.new_switch(config[CONF_AUTOCALCULATION])
-        await cg.register_parented(sw, hub)
-        cg.add(hub.set_autocalculation_switch(sw))
+    switch_defs = [
+        (CONF_BURNER, hub.set_burner_switch),
+        (CONF_AUTOCALCULATION, hub.set_autocalculation_switch),
+    ]
+    for key, setter in switch_defs:
+        if key in config:
+            sw = await switch.new_switch(config[key])
+            await cg.register_parented(sw, hub)
+            cg.add(setter(sw))
