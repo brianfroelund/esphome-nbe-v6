@@ -12,7 +12,6 @@ esp32:
   framework:
     type: esp-idf
 
-# Enable Home Assistant API & OTA updates
 api:
   encryption:
     key: "!secret api_encryption_key"
@@ -23,8 +22,6 @@ ota:
 wifi:
   ssid: "!secret wifi_ssid"
   password: "!secret wifi_password"
-
-  # Enable fallback hotspot in case Wi-Fi connection fails
   ap:
     ssid: "NBE-V6-Hotspot"
     password: "!secret wifi_ap_password"
@@ -33,7 +30,6 @@ captive_portal:
 
 logger:
   level: DEBUG
-  # Leave hardware serial UART0 for console logging & debugging
 
 # Hardware UART for NBE V6 Pellet Burner communication
 # Connected through MAX3232 transceiver board (3.3V VCC)
@@ -46,7 +42,6 @@ uart:
   data_bits: 8
   parity: NONE
 
-# NBE V6 External Component
 external_components:
   - source:
       type: local
@@ -117,6 +112,8 @@ switch:
     nbe_v6_id: nbe_hub
     burner:
       name: "Burner Power"
+    autocalculation:
+      name: "Feeder Auto-Calculation"
 
 number:
   - platform: nbe_v6
@@ -124,7 +121,26 @@ number:
     boiler_temp_set:
       name: "Boiler Target Temperature"
     feeder_capacity:
-      name: "Auger Feeder Capacity"
+      name: "External Auger Calibration Capacity"
+    # Blower Speed Controls ("blæser hastighed")
+    blower_low:
+      name: "Blower Speed Low (10%)"
+    blower_mid:
+      name: "Blower Speed Mid (50%)"
+    blower_high:
+      name: "Blower Speed High (100%)"
+    # Feeding Mechanism Controls ("snegl")
+    feeder_low:
+      name: "Feeder Time Low (10%)"
+    feeder_high:
+      name: "Feeder Time High (100%)"
+    feed_per_minute:
+      name: "Feeder Dosages Per Minute"
+    # Power modulation limits
+    min_power:
+      name: "Burner Minimum Power"
+    max_power:
+      name: "Burner Maximum Power"
 
 button:
   - platform: nbe_v6

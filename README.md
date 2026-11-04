@@ -10,27 +10,31 @@ This project takes inspiration and protocol reverse-engineering from [motoz/Pell
 
 ---
 
-## Features
+## Features & Controls
 
-- **Full Real-Time Telemetry:**
-  - Boiler Temperature (°C)
-  - Chute / Drop-Tube Temperature (°C) — *essential for backfire safety monitoring*
-  - Smoke / Flue Gas Temperature (°C)
-  - Boiler Return & Hot Water Temperatures (°C, if sensors installed)
-  - Instantaneous Modulation Power (%) & Calculated Power (kW)
-  - Residual Exhaust Oxygen (%) and Target Oxygen (%)
-  - Flame Optical Light Sensor Level (%)
-  - Auger Cycle Run Time & Ignition Run Time (seconds)
-  - Lifetime Total Operating Hours (Auger motor runtime & Electric ignition heater)
-- **State & Alarm Diagnostics:**
-  - Human-readable burner operational state (`Waiting`, `Starting`, `Running`, `Paused`, `Making hotwater`, `Stopped`, etc.)
-  - Clear text alarm codes (`Ignition failed`, `Low boiler temp`, `Max chute temp exceeded`, `Out of pellets`, etc.)
-  - Binary safety sensors for immediate Home Assistant automations & mobile alerts.
-- **Two-Way Control:**
-  - **Burner Power Switch:** Start (`V01`) or Stop (`V00`) burner directly from Home Assistant.
-  - **Target Boiler Temperature:** Interactive slider/number control ($40^\circ\text{C}$ to $85^\circ\text{C}$) syncing with the physical controller.
-  - **Auger Feeder Capacity:** Adjust calibration ($400\text{g}$ to $8000\text{g} / 360\text{s}$) remotely.
-  - **Action Buttons:** Clear/reset alarm (`V02`) and reset ignition counter (`D04`).
+### 1. Full Real-Time Telemetry (Read)
+- **Temperatures:** Boiler, Chute (drop-tube backfire safety), Smoke/exhaust, Boiler return, Domestic hot water (DHW), and Outdoor temperature.
+- **Power & Combustion:** Instantaneous burner modulation power (%), calculated power (kW), residual exhaust oxygen (% O2), target oxygen, and optical flame sensor level (%).
+- **Timers & Counters:** Auger cycle run-time, electric ignition run-time, lifetime total auger motor hours, and lifetime total electric ignition element hours.
+- **Diagnostics:** Human-readable operational mode (`Waiting`, `Starting 1/2`, `Running`, `Paused`, `Making hotwater`, `Stopped`, etc.) and active alarms (`Ignition failed`, `Low boiler temp`, `Max chute temp exceeded`, `Out of pellets`, etc.).
+
+### 2. Comprehensive Burner & Feeding Controls (Read & Write)
+- **Burner Power Switch:** Master toggle to turn burner ON (`V01`) or OFF (`V00`).
+- **Target Boiler Temperature:** Slider control from $40^\circ\text{C}$ to $85^\circ\text{C}$ (`B01`).
+- **Feeding Mechanism Controls ("Snegl"):**
+  - **External Auger Calibration Capacity (`F01`):** Adjust the measured pellet dosage in grams for a 6-minute / 360-second test ($400\text{g} - 8000\text{g}$).
+  - **Auto-Calculation Switch (`H04`):** Toggle between automatic fuel calculations based on hopper capacity test or manual pulse timing.
+  - **Feeder Time Low (`B04`):** Manual pulse duration at 10% load ($0.5\text{s} - 25.0\text{s}$).
+  - **Feeder Time High (`B05`):** Manual pulse duration at 100% load ($1.0\text{s} - 100.0\text{s}$).
+  - **Feeder Cycles Per Minute (`B06`):** Select between 1, 2, or 3 dosing cycles per minute.
+- **Blower Speed Controls ("Blæser hastighed"):**
+  - **Blower Low (`A00`):** Fan speed at 10% power ($4\% - 50\%$).
+  - **Blower Mid (`A06`):** Fan speed at 50% power ($5\% - 75\%$).
+  - **Blower High (`A01`):** Fan speed at 100% power ($5\% - 100\%$).
+- **Power Modulation Clamps:**
+  - **Min Power (`H02`):** Lower modulation floor ($10\% - 100\%$).
+  - **Max Power (`H03`):** Upper modulation ceiling ($10\% - 100\%$).
+- **Action Buttons:** Clear/reset active alarm (`V02`) and reset ignition counter (`D04`).
 
 ---
 
@@ -89,7 +93,7 @@ nbe_v6:
   uart_id: uart_nbe
   update_interval: 5s
 
-# Enable desired sensors:
+# Enable desired sensors, switches, and number controls:
 sensor:
   - platform: nbe_v6
     nbe_v6_id: nbe_hub
@@ -105,12 +109,26 @@ switch:
     nbe_v6_id: nbe_hub
     burner:
       name: "Burner Power"
+    autocalculation:
+      name: "Feeder Auto-Calculation"
 
 number:
   - platform: nbe_v6
     nbe_v6_id: nbe_hub
     boiler_temp_set:
       name: "Boiler Target Setpoint"
+    feeder_capacity:
+      name: "External Auger Calibration"
+    blower_low:
+      name: "Blower Speed Low (10%)"
+    blower_mid:
+      name: "Blower Speed Mid (50%)"
+    blower_high:
+      name: "Blower Speed High (100%)"
+    feeder_low:
+      name: "Feeder Time Low (10%)"
+    feeder_high:
+      name: "Feeder Time High (100%)"
 
 button:
   - platform: nbe_v6
@@ -140,7 +158,9 @@ $$\text{Checksum} = \bigoplus_{i=1}^{n} \text{byte}_i$$
 
 - **Poll Requests:**
   - `Z000000` + CS: Primary telemetry frame (100 response bytes + 1 checksum byte).
+  - `Z010000` + CS: Combustion and feeder configuration frame (230 response bytes + 1 checksum byte).
   - `Z020000` + CS: Runtime counters frame (40 response bytes + 1 checksum byte).
+  - `Z030000` + CS: Auto-calculation and mid-load parameters (100 response bytes + 1 checksum byte).
   - `Z040000` + CS: Firmware version identification (10 response bytes + 1 checksum byte).
   - `Z060000` + CS: External temperature sensors frame (90 response bytes + 1 checksum byte).
 - **Control Commands:**
@@ -149,6 +169,9 @@ $$\text{Checksum} = \bigoplus_{i=1}^{n} \text{byte}_i$$
   - `V020000` + CS: Reset active alarm (replies `OK` + CS).
   - `B01xxxx` + CS: Set target boiler temperature (replies `OK` + CS).
   - `F01xxxx` + CS: Set feeder capacity in grams (replies `OK` + CS).
+  - `A00xxxx` / `A06xxxx` / `A01xxxx` + CS: Set blower speeds (replies `OK` + CS).
+  - `B04xxxx` / `B05xxxx` / `B06xxxx` + CS: Set feeder pulse times and frequencies (replies `OK` + CS).
+  - `H04xxxx` + CS: Enable/disable auto calculation (replies `OK` + CS).
 
 ---
 

@@ -27,10 +27,8 @@ captive_portal:
 
 logger:
   level: DEBUG
-  baud_rate: 0  # Disable UART0 serial logging so serial pins can be used
+  baud_rate: 0
 
-# Software UART or hardware UART on D1 Mini
-# D7 (GPIO13) = RX, D8 (GPIO15) = TX connected through MAX3232 transceiver (3.3V)
 uart:
   id: uart_nbe
   tx_pin: GPIO15
@@ -110,6 +108,8 @@ switch:
     nbe_v6_id: nbe_hub
     burner:
       name: "Burner Power"
+    autocalculation:
+      name: "Feeder Auto-Calculation"
 
 number:
   - platform: nbe_v6
@@ -117,7 +117,23 @@ number:
     boiler_temp_set:
       name: "Boiler Target Temperature"
     feeder_capacity:
-      name: "Auger Feeder Capacity"
+      name: "External Auger Calibration Capacity"
+    blower_low:
+      name: "Blower Speed Low (10%)"
+    blower_mid:
+      name: "Blower Speed Mid (50%)"
+    blower_high:
+      name: "Blower Speed High (100%)"
+    feeder_low:
+      name: "Feeder Time Low (10%)"
+    feeder_high:
+      name: "Feeder Time High (100%)"
+    feed_per_minute:
+      name: "Feeder Dosages Per Minute"
+    min_power:
+      name: "Burner Minimum Power"
+    max_power:
+      name: "Burner Maximum Power"
 
 button:
   - platform: nbe_v6

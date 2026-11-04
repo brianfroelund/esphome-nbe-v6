@@ -117,9 +117,11 @@ void NBEV6Component::dump_config() {
 }
 
 void NBEV6Component::update() {
-  // If we haven't read version yet, prioritize reading Z04
+  // If we haven't read version yet, prioritize reading Z04 on startup
   if (!version_requested_) {
     queue_command("Z040000", "Read Version (Z04)");
+    queue_command("Z010000", "Combustion Config (Z01)");
+    queue_command("Z030000", "AutoCalc & Mid Blower (Z03)");
     version_requested_ = true;
   }
 
@@ -129,10 +131,16 @@ void NBEV6Component::update() {
   // Fast cycle: always poll Z00 (real-time telemetry)
   queue_command("Z000000", "Telemetry (Z00)");
 
-  // Medium cycle (~30-60s depending on update interval): poll Z06 (temperatures) and Z02 (runtimes)
+  // Medium cycle (~30s): poll Z06 (temperatures) and Z02 (runtimes)
   if (poll_cycle_ % 6 == 0) {
     queue_command("Z060000", "Extended Sensors (Z06)");
     queue_command("Z020000", "Runtime Counters (Z02)");
+  }
+
+  // Slow cycle (~60s): poll Z01 and Z03 to refresh configuration sliders
+  if (poll_cycle_ % 12 == 0) {
+    queue_command("Z010000", "Combustion Config (Z01)");
+    queue_command("Z030000", "AutoCalc & Mid Blower (Z03)");
   }
 }
 
@@ -141,7 +149,6 @@ void NBEV6Component::queue_command(const std::string &cmd, const std::string &de
 }
 
 void NBEV6Component::send_raw_frame(const std::string &frame, PollFrameType type, size_t expected_length, const std::string &desc) {
-  // Flush input before sending new request
   while (this->available()) {
     this->read();
   }
@@ -163,14 +170,12 @@ void NBEV6Component::send_raw_frame(const std::string &frame, PollFrameType type
 void NBEV6Component::loop() {
   uint32_t now = millis();
 
-  // Read available serial bytes
   while (this->available()) {
     uint8_t byte;
     this->read_byte(&byte);
     process_incoming_byte(byte);
   }
 
-  // Check timeout if waiting for response
   if (state_ == STATE_WAITING_RESPONSE) {
     if (now - send_time_ > 1500) {
       ESP_LOGW(TAG, "Timeout waiting for response to [%s] (received %u / %u bytes)", current_desc_.c_str(), rx_buffer_.size(), expected_response_len_);
@@ -179,7 +184,6 @@ void NBEV6Component::loop() {
         retry_count_++;
         ESP_LOGI(TAG, "Retrying [%s] (attempt %u/2)...", current_desc_.c_str(), retry_count_);
         state_ = STATE_IDLE;
-        // The command will be retried in next idle loop if re-queued
       } else {
         retry_count_ = 0;
         state_ = STATE_IDLE;
@@ -188,8 +192,6 @@ void NBEV6Component::loop() {
     }
   }
 
-  // If idle and commands are queued, execute the next command
-  // Enforce a small inter-frame spacing (150ms) to allow stove micro to settle
   if (state_ == STATE_IDLE && !command_queue_.empty()) {
     if (now - last_poll_time_ >= 150) {
       QueuedCommand next_cmd = command_queue_.front();
@@ -201,9 +203,15 @@ void NBEV6Component::loop() {
       if (next_cmd.command.rfind("Z00", 0) == 0) {
         ftype = FRAME_Z00;
         exp_len = 101;  // 100 data chars + 1 checksum
+      } else if (next_cmd.command.rfind("Z01", 0) == 0) {
+        ftype = FRAME_Z01;
+        exp_len = 231;  // 46 fields * 5 = 230 + 1 checksum
       } else if (next_cmd.command.rfind("Z02", 0) == 0) {
         ftype = FRAME_Z02;
         exp_len = 41;   // 40 data chars + 1 checksum
+      } else if (next_cmd.command.rfind("Z03", 0) == 0) {
+        ftype = FRAME_Z03;
+        exp_len = 101;  // 20 fields * 5 = 100 + 1 checksum
       } else if (next_cmd.command.rfind("Z04", 0) == 0) {
         ftype = FRAME_Z04;
         exp_len = 11;   // 10 data chars + 1 checksum
@@ -211,9 +219,8 @@ void NBEV6Component::loop() {
         ftype = FRAME_Z06;
         exp_len = 91;   // 90 data chars + 1 checksum
       } else {
-        // Parameter write or Action command (e.g., B010065, V010000, V000000, V020000)
         ftype = FRAME_COMMAND;
-        exp_len = 3;    // "OK" + checksum (or error "E0"/"E1" + cs)
+        exp_len = 3;    // "OK" + checksum
       }
 
       send_raw_frame(next_cmd.command, ftype, exp_len, next_cmd.description);
@@ -250,8 +257,14 @@ void NBEV6Component::handle_completed_frame() {
     case FRAME_Z00:
       parse_frame_z00(rx_buffer_);
       break;
+    case FRAME_Z01:
+      parse_frame_z01(rx_buffer_);
+      break;
     case FRAME_Z02:
       parse_frame_z02(rx_buffer_);
+      break;
+    case FRAME_Z03:
+      parse_frame_z03(rx_buffer_);
       break;
     case FRAME_Z04:
       parse_frame_z04(rx_buffer_);
@@ -270,26 +283,6 @@ void NBEV6Component::handle_completed_frame() {
 }
 
 void NBEV6Component::parse_frame_z00(const std::string &frame) {
-  // Frame Z00 layout (lengths: 5,5,5,5,5,5,5,10,10,5,5,5,5,5,5,5,5,5 + 1 cs):
-  // 0: power (%) [len 5]
-  // 5: power_kW (kW, 1 dec) [len 5]
-  // 10: boiler_temp (°C, 1 dec) [len 5]
-  // 15: chute_temp (°C) [len 5]
-  // 20: smoke_temp (°C) [len 5]
-  // 25: oxygen (%, 1 dec) [len 5]
-  // 30: light (%) [len 5]
-  // 35: feeder_time (s) [len 10]
-  // 45: ignition_time (s) [len 10]
-  // 55: alarm code [len 5]
-  // 60: boiler_temp_set (°C) [len 5]
-  // 65: oxygen_desired (%, 1 dec) [len 5]
-  // 70: feeder_capacity (g) [len 5]
-  // 75: chimney_draught [len 5]
-  // 80: reserved [len 5]
-  // 85: reserved [len 5]
-  // 90: mode code [len 5]
-  // 95: model [len 5]
-
   float val_f;
   int val_i;
 
@@ -361,19 +354,60 @@ void NBEV6Component::parse_frame_z00(const std::string &frame) {
       }
     }
     if (burner_switch_) {
-      // 9 is Stopped, 14 is Shut off
       bool is_on = (val_i != 9 && val_i != 14);
       burner_switch_->publish_state(is_on);
     }
   }
 }
 
+void NBEV6Component::parse_frame_z01(const std::string &frame) {
+  // Frame Z01 layout: 46 fields of 5 chars
+  // 0: blower_low (A00, 4..50%)
+  // 1: blower_high (A01, 5..100%)
+  // 10: feeder_low (B04, 0.5..25.0s, dec 2)
+  // 11: feeder_high (B05, 1..100s, dec 1)
+  // 12: feed_per_minute (B06, 1..3)
+  // 37: min_power (H02, 10..100%)
+  // 38: max_power (H03, 10..100%)
+  float val_f;
+
+  if (blower_low_number_ && parse_float_field(frame, 0 * 5, 5, 0, val_f)) {
+    if (!blower_low_number_->has_state() || blower_low_number_->state != val_f)
+      blower_low_number_->publish_state(val_f);
+  }
+
+  if (blower_high_number_ && parse_float_field(frame, 1 * 5, 5, 0, val_f)) {
+    if (!blower_high_number_->has_state() || blower_high_number_->state != val_f)
+      blower_high_number_->publish_state(val_f);
+  }
+
+  if (feeder_low_number_ && parse_float_field(frame, 10 * 5, 5, 2, val_f)) {
+    if (!feeder_low_number_->has_state() || feeder_low_number_->state != val_f)
+      feeder_low_number_->publish_state(val_f);
+  }
+
+  if (feeder_high_number_ && parse_float_field(frame, 11 * 5, 5, 1, val_f)) {
+    if (!feeder_high_number_->has_state() || feeder_high_number_->state != val_f)
+      feeder_high_number_->publish_state(val_f);
+  }
+
+  if (feed_per_minute_number_ && parse_float_field(frame, 12 * 5, 5, 0, val_f)) {
+    if (!feed_per_minute_number_->has_state() || feed_per_minute_number_->state != val_f)
+      feed_per_minute_number_->publish_state(val_f);
+  }
+
+  if (min_power_number_ && parse_float_field(frame, 37 * 5, 5, 0, val_f)) {
+    if (!min_power_number_->has_state() || min_power_number_->state != val_f)
+      min_power_number_->publish_state(val_f);
+  }
+
+  if (max_power_number_ && parse_float_field(frame, 38 * 5, 5, 0, val_f)) {
+    if (!max_power_number_->has_state() || max_power_number_->state != val_f)
+      max_power_number_->publish_state(val_f);
+  }
+}
+
 void NBEV6Component::parse_frame_z02(const std::string &frame) {
-  // Frame Z02 layout (lengths: 10,10,10,10 + 1 cs):
-  // 0: motor_time (seconds)
-  // 10: el_time (seconds)
-  // 20: motor_time_perm
-  // 30: el_time_perm
   float val_f;
   if (motor_runtime_hours_sensor_ && parse_float_field(frame, 0, 10, 0, val_f)) {
     motor_runtime_hours_sensor_->publish_state(val_f / 3600.0f);
@@ -383,10 +417,24 @@ void NBEV6Component::parse_frame_z02(const std::string &frame) {
   }
 }
 
+void NBEV6Component::parse_frame_z03(const std::string &frame) {
+  // Frame Z03 layout: 20 fields of 5 chars
+  // 10: autocalculation (H04, 0 or 1)
+  // 14: blower_mid (A06, 5..75%)
+  float val_f;
+  int val_i;
+
+  if (autocalculation_switch_ && parse_int_field(frame, 10 * 5, 5, val_i)) {
+    autocalculation_switch_->publish_state(val_i == 1);
+  }
+
+  if (blower_mid_number_ && parse_float_field(frame, 14 * 5, 5, 0, val_f)) {
+    if (!blower_mid_number_->has_state() || blower_mid_number_->state != val_f)
+      blower_mid_number_->publish_state(val_f);
+  }
+}
+
 void NBEV6Component::parse_frame_z04(const std::string &frame) {
-  // Frame Z04 layout (lengths: 5,5 + 1 cs):
-  // 0: language
-  // 5: version string (5 chars)
   if (version_text_sensor_ && frame.size() >= 10) {
     std::string ver = trim(frame.substr(5, 5));
     version_text_sensor_->publish_state(ver);
@@ -395,12 +443,6 @@ void NBEV6Component::parse_frame_z04(const std::string &frame) {
 }
 
 void NBEV6Component::parse_frame_z06(const std::string &frame) {
-  // Frame Z06 layout (18 fields of 5 chars each + 1 cs):
-  // 0: boiler_return_temp
-  // 5: hotwater_temp
-  // 10: outside_temp
-  // 15: indoor_temp
-  // 20: flow
   float val_f;
   if (boiler_return_temp_sensor_ && parse_float_field(frame, 0, 5, 0, val_f)) {
     boiler_return_temp_sensor_->publish_state(val_f);
@@ -452,10 +494,7 @@ void NBEV6Component::set_boiler_temp(float temp) {
 
   char buf[16];
   std::snprintf(buf, sizeof(buf), "B01%04d", t);
-  std::string cmd(buf);
-
-  ESP_LOGI(TAG, "Setting target boiler temperature to %d °C (cmd: %s)", t, cmd.c_str());
-  queue_command(cmd, "Set Boiler Temp");
+  queue_command(std::string(buf), "Set Boiler Temp");
 }
 
 void NBEV6Component::set_feeder_capacity(float capacity) {
@@ -465,10 +504,163 @@ void NBEV6Component::set_feeder_capacity(float capacity) {
 
   char buf[16];
   std::snprintf(buf, sizeof(buf), "F01%04d", cap);
-  std::string cmd(buf);
+  queue_command(std::string(buf), "Set Feeder Capacity");
+}
 
-  ESP_LOGI(TAG, "Setting feeder capacity to %d g (cmd: %s)", cap, cmd.c_str());
-  queue_command(cmd, "Set Feeder Capacity");
+void NBEV6Component::set_blower_low(float val) {
+  int v = static_cast<int>(std::round(val));
+  if (v < 4) v = 4;
+  if (v > 50) v = 50;
+
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "A00%04d", v);
+  queue_command(std::string(buf), "Set Blower Low (10%)");
+}
+
+void NBEV6Component::set_blower_mid(float val) {
+  int v = static_cast<int>(std::round(val));
+  if (v < 5) v = 5;
+  if (v > 75) v = 75;
+
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "A06%04d", v);
+  queue_command(std::string(buf), "Set Blower Mid (50%)");
+}
+
+void NBEV6Component::set_blower_high(float val) {
+  int v = static_cast<int>(std::round(val));
+  if (v < 5) v = 5;
+  if (v > 100) v = 100;
+
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "A01%04d", v);
+  queue_command(std::string(buf), "Set Blower High (100%)");
+}
+
+void NBEV6Component::set_feeder_low(float val) {
+  int raw = static_cast<int>(std::round(val * 100.0f));
+  if (raw < 50) raw = 50;
+  if (raw > 2500) raw = 2500;
+
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "B04%04d", raw);
+  queue_command(std::string(buf), "Set Feeder Low (10%)");
+}
+
+void NBEV6Component::set_feeder_high(float val) {
+  int raw = static_cast<int>(std::round(val * 10.0f));
+  if (raw < 10) raw = 10;
+  if (raw > 1000) raw = 1000;
+
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "B05%04d", raw);
+  queue_command(std::string(buf), "Set Feeder High (100%)");
+}
+
+void NBEV6Component::set_feed_per_minute(float val) {
+  int v = static_cast<int>(std::round(val));
+  if (v < 1) v = 1;
+  if (v > 3) v = 3;
+
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "B06%04d", v);
+  queue_command(std::string(buf), "Set Feeder Cycles / Min");
+}
+
+void NBEV6Component::set_min_power(float val) {
+  int v = static_cast<int>(std::round(val));
+  if (v < 10) v = 10;
+  if (v > 100) v = 100;
+
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "H02%04d", v);
+  queue_command(std::string(buf), "Set Min Power");
+}
+
+void NBEV6Component::set_max_power(float val) {
+  int v = static_cast<int>(std::round(val));
+  if (v < 10) v = 10;
+  if (v > 100) v = 100;
+
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "H03%04d", v);
+  queue_command(std::string(buf), "Set Max Power");
+}
+
+void NBEV6Component::set_autocalculation(bool state) {
+  std::string cmd = state ? "H040001" : "H040000";
+  queue_command(cmd, "Set Auto Calculation");
+}
+
+void NBEV6BurnerSwitch::write_state(bool state) {
+  if (state) {
+    this->parent_->turn_burner_on();
+  } else {
+    this->parent_->turn_burner_off();
+  }
+}
+
+void NBEV6AutoCalcSwitch::write_state(bool state) {
+  this->parent_->set_autocalculation(state);
+  this->publish_state(state);
+}
+
+void NBEV6BoilerTempNumber::control(float value) {
+  this->parent_->set_boiler_temp(value);
+  this->publish_state(value);
+}
+
+void NBEV6FeederCapacityNumber::control(float value) {
+  this->parent_->set_feeder_capacity(value);
+  this->publish_state(value);
+}
+
+void NBEV6BlowerLowNumber::control(float value) {
+  this->parent_->set_blower_low(value);
+  this->publish_state(value);
+}
+
+void NBEV6BlowerMidNumber::control(float value) {
+  this->parent_->set_blower_mid(value);
+  this->publish_state(value);
+}
+
+void NBEV6BlowerHighNumber::control(float value) {
+  this->parent_->set_blower_high(value);
+  this->publish_state(value);
+}
+
+void NBEV6FeederLowNumber::control(float value) {
+  this->parent_->set_feeder_low(value);
+  this->publish_state(value);
+}
+
+void NBEV6FeederHighNumber::control(float value) {
+  this->parent_->set_feeder_high(value);
+  this->publish_state(value);
+}
+
+void NBEV6FeedPerMinuteNumber::control(float value) {
+  this->parent_->set_feed_per_minute(value);
+  this->publish_state(value);
+}
+
+void NBEV6MinPowerNumber::control(float value) {
+  this->parent_->set_min_power(value);
+  this->publish_state(value);
+}
+
+void NBEV6MaxPowerNumber::control(float value) {
+  this->parent_->set_max_power(value);
+  this->publish_state(value);
+}
+
+void NBEV6ResetAlarmButton::press_action() {
+  this->parent_->reset_alarm();
+}
+
+void NBEV6ResetIgnitionButton::press_action() {
+  this->parent_->reset_ignition();
 }
 
 }  // namespace nbe_v6

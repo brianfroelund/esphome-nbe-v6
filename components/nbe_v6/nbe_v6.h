@@ -38,7 +38,9 @@ enum State {
 enum PollFrameType {
   FRAME_NONE,
   FRAME_Z00,
+  FRAME_Z01,
   FRAME_Z02,
+  FRAME_Z03,
   FRAME_Z04,
   FRAME_Z06,
   FRAME_COMMAND,
@@ -85,10 +87,21 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   void set_alarm_active_sensor(binary_sensor::BinarySensor *s) { alarm_active_sensor_ = s; }
   void set_fire_detected_sensor(binary_sensor::BinarySensor *s) { fire_detected_sensor_ = s; }
 
-  // Switches, Numbers, Buttons
+  // Switches
   void set_burner_switch(switch_::Switch *s) { burner_switch_ = s; }
+  void set_autocalculation_switch(switch_::Switch *s) { autocalculation_switch_ = s; }
+
+  // Numbers (Setpoints & Combustion Parameters)
   void set_boiler_temp_set_number(number::Number *n) { boiler_temp_set_number_ = n; }
   void set_feeder_capacity_number(number::Number *n) { feeder_capacity_number_ = n; }
+  void set_blower_low_number(number::Number *n) { blower_low_number_ = n; }
+  void set_blower_mid_number(number::Number *n) { blower_mid_number_ = n; }
+  void set_blower_high_number(number::Number *n) { blower_high_number_ = n; }
+  void set_feeder_low_number(number::Number *n) { feeder_low_number_ = n; }
+  void set_feeder_high_number(number::Number *n) { feeder_high_number_ = n; }
+  void set_feed_per_minute_number(number::Number *n) { feed_per_minute_number_ = n; }
+  void set_min_power_number(number::Number *n) { min_power_number_ = n; }
+  void set_max_power_number(number::Number *n) { max_power_number_ = n; }
 
   // Control actions
   void turn_burner_on();
@@ -97,6 +110,15 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   void reset_ignition();
   void set_boiler_temp(float temp);
   void set_feeder_capacity(float capacity);
+  void set_blower_low(float val);
+  void set_blower_mid(float val);
+  void set_blower_high(float val);
+  void set_feeder_low(float val);
+  void set_feeder_high(float val);
+  void set_feed_per_minute(float val);
+  void set_min_power(float val);
+  void set_max_power(float val);
+  void set_autocalculation(bool state);
 
   static uint8_t calc_checksum(const std::string &data);
   static bool verify_checksum(const std::string &data);
@@ -108,7 +130,9 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   void process_incoming_byte(uint8_t byte);
   void handle_completed_frame();
   void parse_frame_z00(const std::string &frame);
+  void parse_frame_z01(const std::string &frame);
   void parse_frame_z02(const std::string &frame);
+  void parse_frame_z03(const std::string &frame);
   void parse_frame_z04(const std::string &frame);
   void parse_frame_z06(const std::string &frame);
   void parse_command_ack(const std::string &frame);
@@ -157,8 +181,18 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   binary_sensor::BinarySensor *fire_detected_sensor_{nullptr};
 
   switch_::Switch *burner_switch_{nullptr};
+  switch_::Switch *autocalculation_switch_{nullptr};
+
   number::Number *boiler_temp_set_number_{nullptr};
   number::Number *feeder_capacity_number_{nullptr};
+  number::Number *blower_low_number_{nullptr};
+  number::Number *blower_mid_number_{nullptr};
+  number::Number *blower_high_number_{nullptr};
+  number::Number *feeder_low_number_{nullptr};
+  number::Number *feeder_high_number_{nullptr};
+  number::Number *feed_per_minute_number_{nullptr};
+  number::Number *min_power_number_{nullptr};
+  number::Number *max_power_number_{nullptr};
 };
 
 }  // namespace nbe_v6
@@ -167,4 +201,3 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
 #include "nbe_v6_switch.h"
 #include "nbe_v6_number.h"
 #include "nbe_v6_button.h"
-

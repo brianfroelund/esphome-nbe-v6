@@ -3,22 +3,19 @@
 #include "esphome/components/button/button.h"
 #include "esphome/core/component.h"
 
-
 namespace esphome {
 namespace nbe_v6 {
 
+class NBEV6Component;
+
 class NBEV6ResetAlarmButton : public button::Button, public Parented<NBEV6Component> {
  protected:
-  void press_action() override {
-    this->parent_->reset_alarm();
-  }
+  void press_action() override;
 };
 
 class NBEV6ResetIgnitionButton : public button::Button, public Parented<NBEV6Component> {
  protected:
-  void press_action() override {
-    this->parent_->reset_ignition();
-  }
+  void press_action() override;
 };
 
 }  // namespace nbe_v6
