@@ -1,0 +1,135 @@
+substitutions:
+  name: "nbe-v6-pellet-stove"
+  friendly_name: "NBE V6 Pellet Stove"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2024.6.0
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+# Enable Home Assistant API & OTA updates
+api:
+  encryption:
+    key: "!secret api_encryption_key"
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: "!secret wifi_ssid"
+  password: "!secret wifi_password"
+
+  # Enable fallback hotspot in case Wi-Fi connection fails
+  ap:
+    ssid: "NBE-V6-Hotspot"
+    password: "!secret wifi_ap_password"
+
+captive_portal:
+
+logger:
+  level: DEBUG
+  # Leave hardware serial UART0 for console logging & debugging
+
+# Hardware UART for NBE V6 Pellet Burner communication
+# Connected through MAX3232 transceiver board (3.3V VCC)
+uart:
+  id: uart_nbe
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 9600
+  stop_bits: 1
+  data_bits: 8
+  parity: NONE
+
+# NBE V6 External Component
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [ nbe_v6 ]
+
+nbe_v6:
+  id: nbe_hub
+  uart_id: uart_nbe
+  update_interval: 5s
+
+sensor:
+  - platform: nbe_v6
+    nbe_v6_id: nbe_hub
+    boiler_temperature:
+      name: "Boiler Temperature"
+    chute_temperature:
+      name: "Chute Temperature"
+    smoke_temperature:
+      name: "Smoke Temperature"
+    boiler_return_temperature:
+      name: "Boiler Return Temperature"
+    hot_water_temperature:
+      name: "Hot Water Temperature"
+    outdoor_temperature:
+      name: "Outdoor Temperature"
+    power_percent:
+      name: "Burner Power Percent"
+    power_kw:
+      name: "Burner Power kW"
+    oxygen:
+      name: "Exhaust Oxygen"
+    oxygen_desired:
+      name: "Desired Oxygen"
+    light:
+      name: "Flame Sensor Light"
+    feeder_time:
+      name: "Auger Cycle Feeder Time"
+    ignition_time:
+      name: "Ignition Element Time"
+    motor_runtime_hours:
+      name: "Total Auger Runtime"
+    ignition_runtime_hours:
+      name: "Total Ignition Runtime"
+    target_boiler_temperature:
+      name: "Current Boiler Target Setpoint"
+
+text_sensor:
+  - platform: nbe_v6
+    nbe_v6_id: nbe_hub
+    mode:
+      name: "Burner State / Mode"
+    alarm:
+      name: "Burner Alarm Status"
+    version:
+      name: "NBE Controller Firmware Version"
+
+binary_sensor:
+  - platform: nbe_v6
+    nbe_v6_id: nbe_hub
+    alarm_active:
+      name: "Alarm Active"
+    fire_detected:
+      name: "Flame Detected"
+
+switch:
+  - platform: nbe_v6
+    nbe_v6_id: nbe_hub
+    burner:
+      name: "Burner Power"
+
+number:
+  - platform: nbe_v6
+    nbe_v6_id: nbe_hub
+    boiler_temp_set:
+      name: "Boiler Target Temperature"
+    feeder_capacity:
+      name: "Auger Feeder Capacity"
+
+button:
+  - platform: nbe_v6
+    nbe_v6_id: nbe_hub
+    reset_alarm:
+      name: "Reset Alarm"
+    reset_ignition:
+      name: "Reset Ignition Counter"
