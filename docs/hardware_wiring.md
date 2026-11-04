@@ -16,52 +16,73 @@ This guide provides the complete hardware wiring and setup instructions for conn
 
 ## Bill of Materials (BOM)
 
+### Option A: External Mounting (Standard / Easiest)
 | Component | Description | Approximate Cost |
 | :--- | :--- | :--- |
 | **ESP32 DevKit v1** (or ESP32-C3) | Microcontroller board with Wi-Fi and multiple hardware UARTs | ~$3 - $5 (25 - 40 DKK) |
 | **MAX3232 Module** | 3.3V RS-232 to TTL converter board (with DB9 connector or screw terminals) | ~$1 - $2 (10 - 20 DKK) |
-| **5V USB Power Supply** | 5V 1A/2A DC USB power adapter and cable for the ESP32 | ~$3 - $5 |
+| **5V USB Power Supply** | 5V 1A/2A DC USB power adapter and cable | ~$3 - $5 |
 | **Connecting Wires** | DuPont jumper wires / 3-conductor shielded cable | ~$1 |
+
+### Option B: All-in-One Internal Mounting (Clean, Inside NBE Box)
+| Component | Description | Approximate Cost |
+| :--- | :--- | :--- |
+| **ESP32 Board** | ESP32-C3 SuperMini or ESP32 DevKit | ~$3 - $5 |
+| **MAX3232 Module** | 3.3V RS-232 to TTL converter board | ~$1 - $2 |
+| **Hi-Link HLK-PM01** | Mini isolated 230VAC to 5V DC step-down module (3W / 600mA) | ~$2 - $3 (15 - 25 DKK) |
+| **Optional External Antenna** | ESP32 with IPEX/U.FL connector + pigtail antenna (if metal box shields Wi-Fi) | ~$2 |
 
 ---
 
-## NBE V6 Controller Board RS-232 Socket & Connectors
+## Internal Mounting & "Stealing Power": What You Must Know
 
-1. **Verify RS-232 Driver Chip:**
-   - Look at your NBE V6 circuit board. There is a dedicated DIP-16 socket for the RS-232 transceiver chip (MAX232 or equivalent).
-   - Ensure the chip is present in its socket. If your board was supplied with the chip, make sure the notch matches the socket silkscreen marking.
+Many users wish to fit the ESP32 completely inside the NBE controller box for a tidy installation without external cables.
 
-2. **Controller Connection Terminals:**
-   - Most NBE V6 boards expose serial communication via screw terminals or a female DB9 port:
-     - **TX** (Transmit data out from stove)
-     - **RX** (Receive data into stove)
-     - **GND** (Signal Ground)
+### 1. Physical Space
+- **Yes**, there is ample space inside the NBE V6 controller enclosure to mount an ESP32, MAX3232, and a small power supply module.
+- **Wi-Fi Shielding (Faraday Cage)**: The NBE enclosure is metal and mounted next to a large metal boiler. If your Wi-Fi signal in the boiler room is borderline, the metal box can attenuate the 2.4 GHz signal.
+  - *Solution*: Use an ESP32 variant with an external antenna connector (IPEX/U.FL) and route the antenna through an existing rubber cable gland or knock-out hole, or test with the lid on before sealing.
+
+### 2. Can You Steal Power from the NBE Low-Voltage Rails (5V / 12V)?
+- **❌ DO NOT tap the NBE board's internal 5V logic rail!**
+  - The onboard 5V regulator (linear 7805 fed by a small ~2VA transformer) was designed in the 2000s strictly to power the low-power MCU (10–30 mA), sensor ADC, and 7-segment LED display.
+  - The ESP32 draws **200–350 mA (with RF transmission bursts up to 450–500 mA)**.
+  - Drawing this from the NBE 5V rail will overheat the onboard regulator or cause brown-out voltage dips that crash or reset the burner controller mid-burn!
+- **✅ The Safe Solution: Tap the 230V Mains Terminals Inside the Box!**
+  - Inside the NBE case, 230V AC mains enters via screw terminals (L, N, PE).
+  - Connect a tiny, fully isolated **Hi-Link HLK-PM01 (230VAC to 5V DC)** module to the 230V incoming terminals (downstream of the main switch/fuse).
+  - Connect the 5V DC output of the HLK-PM01 directly to the `5V` / `VIN` and `GND` pins of the ESP32.
+  - This keeps the stove's sensitive microchip 100% isolated, completely eliminates brown-outs, and gives you a clean internal installation with zero external power bricks.
 
 ---
 
 ## Wiring Pinout Diagram
 
 ```
-+------------------+         +-------------------+         +-------------------+
-|                  |         |      MAX3232      |         |      NBE V6       |
-|      ESP32       |         |    Transceiver    |         |    Pellet Stove   |
-|                  |         |                   |         |                   |
-| 3.3V ------------+---------> VCC               |         |                   |
-| GND  ------------+---------> GND               |         |                   |
-|                  |         |                   |         |                   |
-| GPIO16 (RX2) <---+---------+ TXD               |         |                   |
-| GPIO17 (TX2) ----+---------> RXD               |         |                   |
-|                  |         |      RS-232 Side  |         |   RS-232 Side     |
-|                  |         |  TX-out (Pin 2) --+---------> RX Terminal       |
-|                  |         |  RX-in  (Pin 3) <-+---------+ TX Terminal       |
-|                  |         |  GND    (Pin 5) --+---------> GND Terminal      |
-+------------------+         +-------------------+         +-------------------+
++---------------------------------------------------------------------------------+
+| NBE V6 Controller Box (Internal)                                                |
+|                                                                                 |
+| 230VAC Mains IN ---+---> [Hi-Link HLK-PM01]                                     |
+|                    |     5V DC OUT ---+-------------> ESP32 (5V / VIN)          |
+|                    |     GND       ---+-------------> ESP32 (GND)               |
+|                                                            |                    |
+|                                                3.3V OUT ---+---> MAX3232 (VCC)  |
+|                                                GND      ---+---> MAX3232 (GND)  |
+|                                                                     |           |
+|                                            GPIO16 (RX2) <-------+-- TXD (TTL)   |
+|                                            GPIO17 (TX2) --------+-> RXD (TTL)   |
+|                                                                     |           |
+| NBE Serial Screw Terminals:                                         |           |
+|   RX Terminal <------------------------------------------------- TX (RS-232)   |
+|   TX Terminal -------------------------------------------------> RX (RS-232)   |
+|   GND Terminal ------------------------------------------------- GND           |
++---------------------------------------------------------------------------------+
 ```
 
 ### ESP32 to MAX3232 (TTL Side, 3.3V)
 | ESP32 Pin | MAX3232 Pin | Function |
 | :--- | :--- | :--- |
-| **3V3** | **VCC** | Power module at 3.3V logic levels |
+| **3V3** | **VCC** | Power transceiver module at 3.3V logic levels |
 | **GND** | **GND** | Common Ground |
 | **GPIO16** (UART2 RX) | **TXD** (TTL TX out) | Receives data from MAX3232 into ESP |
 | **GPIO17** (UART2 TX) | **RXD** (TTL RX in) | Transmits data from ESP into MAX3232 |
@@ -80,7 +101,7 @@ This guide provides the complete hardware wiring and setup instructions for conn
 ## Testing & Troubleshooting
 
 1. **Power Sequence:**
-   - Power the ESP32 via USB.
+   - Power the ESP32.
    - Ensure the NBE V6 stove controller is turned on.
 2. **Check Logs:**
    - Run `esphome logs nbe-v6-esp32.yaml`.
