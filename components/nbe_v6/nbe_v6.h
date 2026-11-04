@@ -28,6 +28,7 @@ class NBEV6Component;
 enum State {
   STATE_IDLE,
   STATE_WAITING_RESPONSE,
+  STATE_DRAINING_ERROR,
 };
 
 enum PollFrameType {
@@ -48,7 +49,6 @@ struct QueuedCommand {
   size_t expected_length{3};
 };
 
-// Component Hub
 class NBEV6Component : public PollingComponent, public uart::UARTDevice {
  public:
   NBEV6Component() = default;
@@ -127,9 +127,11 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   void queue_command(const std::string &cmd, const std::string &desc);
   void queue_param_write(const char *address, float val, float min_val, float max_val, int decimals, const char *desc);
 
-  void send_raw_frame(const std::string &frame, PollFrameType type, size_t expected_length, const std::string &desc);
+  void send_raw_frame(const QueuedCommand &cmd);
   void process_incoming_byte(uint8_t byte);
   void handle_completed_frame();
+  void handle_error_response(char err_code);
+  void enter_drain_state();
 
   void parse_frame_z00(const std::string &frame);
   void parse_frame_z01(const std::string &frame);
@@ -146,11 +148,12 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
   static void publish_number_if_changed(number::Number *n, float val);
 
   State state_{STATE_IDLE};
-  PollFrameType current_frame_type_{FRAME_NONE};
-  std::string current_desc_{""};
-  size_t expected_response_len_{0};
+  QueuedCommand current_cmd_{};
+  bool has_active_cmd_{false};
+
   uint32_t send_time_{0};
-  uint32_t last_poll_time_{0};
+  uint32_t last_comm_time_{0};
+  uint32_t last_rx_time_{0};
   uint8_t retry_count_{0};
 
   std::string rx_buffer_{};
@@ -158,6 +161,9 @@ class NBEV6Component : public PollingComponent, public uart::UARTDevice {
 
   uint32_t poll_cycle_{0};
   bool version_requested_{false};
+  bool z01_supported_{true};
+  bool z03_supported_{true};
+  bool z06_supported_{true};
 
   // Sensors
   sensor::Sensor *boiler_temp_sensor_{nullptr};

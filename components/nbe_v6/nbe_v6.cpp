@@ -142,103 +142,159 @@ void NBEV6Component::queue_param_write(const char *address, float val, float min
 }
 
 void NBEV6Component::update() {
+  // On boot, query version string
   if (!version_requested_) {
     queue_poll("Z040000", FRAME_Z04, 11, "Read Version (Z04)");
-    queue_poll("Z010000", FRAME_Z01, 231, "Combustion Config (Z01)");
-    queue_poll("Z030000", FRAME_Z03, 101, "AutoCalc & Mid Blower (Z03)");
     version_requested_ = true;
   }
 
   poll_cycle_++;
 
-  // Fast cycle: always poll Z00 (telemetry)
+  // Always schedule primary telemetry (Z00)
   queue_poll("Z000000", FRAME_Z00, 101, "Telemetry (Z00)");
 
-  // Medium cycle (~30s): poll Z06 (temperatures) and Z02 (runtimes)
-  if (poll_cycle_ % 6 == 0) {
+  // Round-robin secondary polls across cycles to prevent serial congestion
+  if (poll_cycle_ % 3 == 1 && z06_supported_) {
     queue_poll("Z060000", FRAME_Z06, 91, "Extended Sensors (Z06)");
+  } else if (poll_cycle_ % 3 == 2) {
     queue_poll("Z020000", FRAME_Z02, 41, "Runtime Counters (Z02)");
-  }
-
-  // Slow cycle (~60s): poll Z01 and Z03 to refresh configuration sliders
-  if (poll_cycle_ % 12 == 0) {
-    queue_poll("Z010000", FRAME_Z01, 231, "Combustion Config (Z01)");
-    queue_poll("Z030000", FRAME_Z03, 101, "AutoCalc & Mid Blower (Z03)");
+  } else if (poll_cycle_ % 6 == 0) {
+    if (z01_supported_) queue_poll("Z010000", FRAME_Z01, 231, "Combustion Config (Z01)");
+    if (z03_supported_) queue_poll("Z030000", FRAME_Z03, 101, "AutoCalc & Mid Blower (Z03)");
   }
 }
 
-void NBEV6Component::send_raw_frame(const std::string &frame, PollFrameType type, size_t expected_length, const std::string &desc) {
+void NBEV6Component::send_raw_frame(const QueuedCommand &cmd) {
   while (this->available()) {
     this->read();
   }
 
   rx_buffer_.clear();
-  current_frame_type_ = type;
-  expected_response_len_ = expected_length;
-  current_desc_ = desc;
   send_time_ = millis();
   state_ = STATE_WAITING_RESPONSE;
 
-  std::string full_packet = add_checksum(frame);
-  ESP_LOGD(TAG, "Sending frame [%s]: %s (len: %u, expected reply: %u bytes)", desc.c_str(), frame.c_str(), full_packet.size(), expected_length);
+  std::string full_packet = add_checksum(cmd.command);
+  ESP_LOGD(TAG, "Sending [%s]: %s (raw len: %u, expected reply: %u bytes)", cmd.description.c_str(), cmd.command.c_str(), full_packet.size(), cmd.expected_length);
 
-  this->write_str(full_packet.c_str());
+  // Use write_array instead of write_str to ensure 0x00 checksum bytes are never truncated
+  this->write_array(reinterpret_cast<const uint8_t *>(full_packet.data()), full_packet.size());
   this->flush();
+}
+
+void NBEV6Component::enter_drain_state() {
+  state_ = STATE_DRAINING_ERROR;
+  last_rx_time_ = millis();
 }
 
 void NBEV6Component::loop() {
   uint32_t now = millis();
 
+  // Read available serial bytes
   while (this->available()) {
     uint8_t byte;
     this->read_byte(&byte);
-    process_incoming_byte(byte);
+    last_rx_time_ = now;
+    if (state_ == STATE_WAITING_RESPONSE) {
+      process_incoming_byte(byte);
+    }
   }
 
+  // Drain state: Wait for electrical noise or in-flight stove bytes to quiet down before retransmitting
+  if (state_ == STATE_DRAINING_ERROR) {
+    if (now - last_rx_time_ >= 200) {
+      while (this->available()) {
+        this->read();
+      }
+      state_ = STATE_IDLE;
+      last_comm_time_ = now;
+    }
+    return;
+  }
+
+  // Check response timeout
   if (state_ == STATE_WAITING_RESPONSE && (now - send_time_ > 1500)) {
-    ESP_LOGW(TAG, "Timeout waiting for response to [%s] (received %u / %u bytes)", current_desc_.c_str(), rx_buffer_.size(), expected_response_len_);
-    
+    ESP_LOGW(TAG, "Timeout waiting for [%s] (received %u / %u bytes)", current_cmd_.description.c_str(), rx_buffer_.size(), current_cmd_.expected_length);
+
     if (retry_count_ < 2) {
       retry_count_++;
-      ESP_LOGI(TAG, "Retrying [%s] (attempt %u/2)...", current_desc_.c_str(), retry_count_);
+      ESP_LOGI(TAG, "Retrying [%s] (attempt %u/2)...", current_cmd_.description.c_str(), retry_count_);
+      enter_drain_state();
     } else {
       retry_count_ = 0;
-      current_frame_type_ = FRAME_NONE;
+      has_active_cmd_ = false;
+      enter_drain_state();
     }
-    state_ = STATE_IDLE;
+    return;
   }
 
-  if (state_ == STATE_IDLE && !command_queue_.empty() && (now - last_poll_time_ >= 150)) {
-    QueuedCommand next_cmd = command_queue_.front();
-    command_queue_.pop();
-    send_raw_frame(next_cmd.command, next_cmd.frame_type, next_cmd.expected_length, next_cmd.description);
+  // Ready to send next command or re-send active command on retry
+  if (state_ == STATE_IDLE && (now - last_comm_time_ >= 200)) {
+    if (has_active_cmd_) {
+      // Retrying current command
+      send_raw_frame(current_cmd_);
+    } else if (!command_queue_.empty()) {
+      current_cmd_ = command_queue_.front();
+      command_queue_.pop();
+      has_active_cmd_ = true;
+      retry_count_ = 0;
+      send_raw_frame(current_cmd_);
+    }
+  }
+}
+
+void NBEV6Component::handle_error_response(char err_code) {
+  last_comm_time_ = millis();
+  has_active_cmd_ = false;
+  retry_count_ = 0;
+
+  if (err_code == '1') {
+    ESP_LOGW(TAG, "Stove returned E1: Command [%s] not supported on this firmware version.", current_cmd_.description.c_str());
+    if (current_cmd_.frame_type == FRAME_Z06) z06_supported_ = false;
+    else if (current_cmd_.frame_type == FRAME_Z01) z01_supported_ = false;
+    else if (current_cmd_.frame_type == FRAME_Z03) z03_supported_ = false;
+    state_ = STATE_IDLE;
+  } else {
+    ESP_LOGW(TAG, "Stove returned E0: Checksum error on [%s].", current_cmd_.description.c_str());
+    enter_drain_state();
   }
 }
 
 void NBEV6Component::process_incoming_byte(uint8_t byte) {
-  if (state_ != STATE_WAITING_RESPONSE)
-    return;
-
   rx_buffer_.push_back(static_cast<char>(byte));
-  if (rx_buffer_.size() >= expected_response_len_) {
+
+  // Early detection of 3-byte Error response ("E0" / "E1" + checksum)
+  // Prevents hanging on a 1.5s timeout when an older firmware rejects an extended poll
+  if (rx_buffer_.size() == 3 && rx_buffer_[0] == 'E' && (rx_buffer_[1] == '0' || rx_buffer_[1] == '1')) {
+    if (verify_checksum(rx_buffer_)) {
+      handle_error_response(rx_buffer_[1]);
+      return;
+    }
+  }
+
+  if (rx_buffer_.size() >= current_cmd_.expected_length) {
     handle_completed_frame();
   }
 }
 
 void NBEV6Component::handle_completed_frame() {
-  last_poll_time_ = millis();
-  state_ = STATE_IDLE;
-  retry_count_ = 0;
+  last_comm_time_ = millis();
 
   if (!verify_checksum(rx_buffer_)) {
-    ESP_LOGE(TAG, "Checksum failed for [%s]! Size: %u, expected: %u", current_desc_.c_str(), rx_buffer_.size(), expected_response_len_);
-    current_frame_type_ = FRAME_NONE;
+    ESP_LOGE(TAG, "Checksum failed for [%s]! Size: %u, expected: %u", current_cmd_.description.c_str(), rx_buffer_.size(), current_cmd_.expected_length);
+    if (retry_count_ < 2) {
+      retry_count_++;
+      ESP_LOGI(TAG, "Retrying [%s] due to checksum failure (attempt %u/2)...", current_cmd_.description.c_str(), retry_count_);
+    } else {
+      retry_count_ = 0;
+      has_active_cmd_ = false;
+    }
+    enter_drain_state();
     return;
   }
 
-  ESP_LOGV(TAG, "Valid frame received for [%s]", current_desc_.c_str());
+  ESP_LOGV(TAG, "Valid frame received for [%s]", current_cmd_.description.c_str());
 
-  switch (current_frame_type_) {
+  switch (current_cmd_.frame_type) {
     case FRAME_Z00: parse_frame_z00(rx_buffer_); break;
     case FRAME_Z01: parse_frame_z01(rx_buffer_); break;
     case FRAME_Z02: parse_frame_z02(rx_buffer_); break;
@@ -249,7 +305,9 @@ void NBEV6Component::handle_completed_frame() {
     default: break;
   }
 
-  current_frame_type_ = FRAME_NONE;
+  has_active_cmd_ = false;
+  retry_count_ = 0;
+  state_ = STATE_IDLE;
 }
 
 void NBEV6Component::parse_frame_z00(const std::string &frame) {
@@ -352,13 +410,13 @@ void NBEV6Component::parse_frame_z06(const std::string &frame) {
 
 void NBEV6Component::parse_command_ack(const std::string &frame) {
   if (frame.rfind("OK", 0) == 0) {
-    ESP_LOGI(TAG, "Command [%s] acknowledged by stove (OK).", current_desc_.c_str());
+    ESP_LOGI(TAG, "Command [%s] acknowledged by stove (OK).", current_cmd_.description.c_str());
   } else if (frame.rfind("E0", 0) == 0) {
-    ESP_LOGW(TAG, "Stove rejected [%s]: Checksum error (E0).", current_desc_.c_str());
+    ESP_LOGW(TAG, "Stove rejected [%s]: Checksum error (E0).", current_cmd_.description.c_str());
   } else if (frame.rfind("E1", 0) == 0) {
-    ESP_LOGW(TAG, "Stove rejected [%s]: Parameter not supported (E1).", current_desc_.c_str());
+    ESP_LOGW(TAG, "Stove rejected [%s]: Parameter not supported (E1).", current_cmd_.description.c_str());
   } else {
-    ESP_LOGW(TAG, "Stove unexpected response to [%s]: %s", current_desc_.c_str(), frame.c_str());
+    ESP_LOGW(TAG, "Stove unexpected response to [%s]: %s", current_cmd_.description.c_str(), frame.c_str());
   }
 }
 
